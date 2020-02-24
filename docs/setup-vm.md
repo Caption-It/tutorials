@@ -56,8 +56,8 @@ In the terminal where you have made your remote SSH connection:
 2. `sudo fdisk /dev/<disk>`
 3. `g`
 4. `n`
-5. <Enter>
-6. <Enter>
+5. `<Enter>`
+6. `<Enter>`
 7. `w`
 
 ### Create the file system
@@ -74,3 +74,12 @@ In the terminal where you have made your remote SSH connection:
 
 1. `sudo nano /etc/fstab`
 2. TODO:
+
+## Clone The Code
+
+1. `cd ~`
+2. `git clone <clone url> <new folder>`
+
+## Go To Jupyter Lab
+
+In a browser go to, `https://<public ip>:8000`.
