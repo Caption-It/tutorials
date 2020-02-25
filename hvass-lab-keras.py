@@ -53,6 +53,31 @@ def is_running_on_gpu():
     return len(physical_devices) != 0
 
 
+def get_captions(coco_data, image_ids):
+    anns_ids = coco_data.getAnnIds(imgIds=image_ids)
+    anns = coco_data.loadAnns(ids=anns_ids)
+    captions = []
+    for image_id in image_ids:
+        anns_ids = coco_data.getAnnIds(imgIds=image_id)
+        anns = coco_data.loadAnns(ids=anns_ids)
+        captions.append([ann['caption'] for ann in anns])
+    return captions
+
+
+def mark_captions(captions):
+    captions_marked = [[MARK_START + caption + MARK_END
+                        for caption in captions_for_one_img]
+                       for captions_for_one_img in captions]
+    return captions_marked
+
+
+def flatten(captions):
+    captions_flat = [caption
+                     for captions_for_one_img in captions
+                     for caption in captions_for_one_img]
+    return captions_flat
+
+
 def download_and_extract(file_name_no_extension, dest_dir=None, data_dir='.', sub_path='zips'):
     '''Download and extract zip files if they haven't been already.
     '''
@@ -79,16 +104,6 @@ def download_data(data_dir, image_dir):
     print('Finished downloading data')
 
 
-def load_train_dataset(data_dir):
-    train_data = COCO(f'{data_dir}/annotations/captions_train2017.json')
-    return train_data
-
-
-def load_validation_dataset(data_dir):
-    val_data = COCO(f'{data_dir}/annotations/captions_val2017.json')
-    return val_data
-
-
 def load_image(path, size=None):
     """
     Load the image from the given file-path and resize it
@@ -108,20 +123,34 @@ def load_image(path, size=None):
     return image
 
 
-def show_images(image_ids, coco_data, image_dir, should_show_images):
+def show_images(image_ids, coco_data, image_dir):
     image_props_list = coco_data.loadImgs(image_ids)
 
     for image_props in image_props_list:
-        if should_show_images:
-            image = load_image(os.path.join(
-                image_dir, image_props['file_name']))
-            plt.axis('off')
-            plt.imshow(image)
-            plt.show()
+        image = load_image(os.path.join(
+            image_dir, image_props['file_name']))
+        plt.axis('off')
+        plt.imshow(image)
+        plt.show()
 
-        ann_ids = coco_data.getAnnIds(imgIds=image_props['id'])
-        anns = coco_data.loadAnns(ann_ids)
-        coco_data.showAnns(anns)
+
+def show_captions(image_ids, coco_data):
+    ann_ids = coco_data.getAnnIds(imgIds=image_ids)
+    anns = coco_data.loadAnns(ann_ids)
+    coco_data.showAnns(anns)
+
+
+def create_batches(l, batch_size):
+    for idx in range(0, len(l), batch_size):
+        yield l[idx:idx+batch_size]
+
+
+def get_images_ids(coco_data, set_size=None):
+    image_ids = coco_data.getImgIds()
+    if set_size is None:
+        return image_ids
+    else:
+        return image_ids[:set_size]
 
 
 def create_image_model():
@@ -132,73 +161,78 @@ def create_image_model():
     return image_transer_model
 
 
-def create_batches(l, batch_size):
-    for idx in range(0, len(l), batch_size):
-        yield l[idx:idx+batch_size]
+class CaptionItModelRunner(object):
+    # TODO: finish doing this class
+    def __init__(self, data_dir, image_dir, model_dir,
+
+                 train_data_size=None, val_data_size=None):
+        super().__init__()
+        self.data_dir = data_dir
+        self.image_dir = image_dir
+        self.model_dir = model_dir
+        self.train_data_size = train_data_size
+        self.val_data_size = val_data_size
+
+        # Populated in initialize
+        self.coco_train = None
+        self.coco_val = None
+        self.train_image_ids = None
+        self.val_image_ids = None
+        self.image_model = None
+        self.caption_model = None
+        self.tokenizer = None
+
+    def initialize(self):
+        self.coco_train = self._load_train_dataset()
+        self.coco_val = self._load_val_dataset()
+        self.train_image_ids = get_images_ids(
+            self.coco_train, self.train_data_size)
+        self.train_data_size = len(self.train_image_ids)
+        self.val_image_ids = get_images_ids(self.coco_val, self.val_data_size)
+        self.val_data_size = len(self.val_image_ids)
+        self.image_model = create_image_model()
 
 
-def get_images_ids(coco_data, set_size=None):
-    image_ids_full = coco_data.getImgIds()
-    return (
-        image_ids_full if set_size is None
-        else image_ids_full[:set_size]
-    )
+    def _load_train_dataset(self):
+        train_data = COCO(
+            f'{self.data_dir}/annotations/captions_train2017.json')
+        return train_data
 
+    def _load_validation_dataset(self):
+        val_data = COCO(f'{self.data_dir}/annotations/captions_val2017.json')
+        return val_data
 
-def process_images(image_ids, image_dir, coco_data,
-                   model, batch_size=32, image_size=(224, 224),
-                   transfer_size=4096):
-    num_images = len(image_ids)
-    image_shape = (batch_size,) + image_size + (3,)
-    image_batch = np.zeros(shape=image_shape, dtype=np.float16)
-    transfer_shape = (num_images, transfer_size)
-    transfer_values = np.zeros(shape=transfer_shape, dtype=np.float16)
-    image_id_batches = create_batches(image_ids, batch_size)
-    start_index = 0
-    for image_id_batch in tqdm(image_id_batches):
-        image_props_batch = coco_data.loadImgs(ids=image_id_batch)
-        # The size of the current batch can be less than batch_size
-        # if the dataset doesn't devide evenly into batch_size
-        current_batch_size = len(image_props_batch)
-        for idx, image_props in enumerate(image_props_batch):
-            image_batch[idx] = load_image(
-                os.path.join(image_dir, image_props['file_name']),
-                size=image_size)
+    def _process_images(image_ids, coco_data,
+                        batch_size=32,
+                        transfer_size=4096):
+        num_images = len(image_ids)
+        image_size = get_image_size(self.image_model)
+        transfer_size = get_transfer_value_size(self.image_model)
+        image_shape = (batch_size,) + image_size + (3,)
+        image_batch = np.zeros(shape=image_shape, dtype=np.float16)
+        transfer_shape = (num_images, transfer_size)
+        transfer_values = np.zeros(shape=transfer_shape, dtype=np.float16)
+        image_id_batches = create_batches(image_ids, batch_size)
+        start_index = 0
+        for image_id_batch in tqdm(image_id_batches):
+            image_props_batch = coco_data.loadImgs(ids=image_id_batch)
+            # The size of the current batch can be less than batch_size
+            # if the dataset doesn't devide evenly into batch_size
+            current_batch_size = len(image_props_batch)
+            for idx, image_props in enumerate(image_props_batch):
+                image_batch[idx] = load_image(
+                    os.path.join(image_dir, image_props['file_name']),
+                    size=image_size)
 
-        transfer_values_batch = model.predict(
-            image_batch[0:current_batch_size])
-        transfer_values[start_index:start_index + current_batch_size] = (
-            transfer_values_batch[0:current_batch_size]
-        )
+            transfer_values_batch = self.image_model.predict(
+                image_batch[0:current_batch_size])
+            transfer_values[start_index:start_index + current_batch_size] = (
+                transfer_values_batch[0:current_batch_size]
+            )
 
-        start_index += current_batch_size
+            start_index += current_batch_size
 
-    return transfer_values
-
-
-def get_captions(coco_data, img_ids):
-    anns_ids = coco_data.getAnnIds(imgIds=img_ids)
-    anns = coco_data.loadAnns(ids=anns_ids)
-    captions = []
-    for img_id in img_ids:
-        anns_ids = coco_data.getAnnIds(imgIds=img_id)
-        anns = coco_data.loadAnns(ids=anns_ids)
-        captions.append([ann['caption'] for ann in anns])
-    return captions
-
-
-def mark_captions(captions):
-    captions_marked = [[MARK_START + caption + MARK_END
-                        for caption in captions_for_one_img]
-                       for captions_for_one_img in captions]
-    return captions_marked
-
-
-def flatten(captions):
-    captions_flat = [caption
-                     for captions_for_one_img in captions
-                     for caption in captions_for_one_img]
-    return captions_flat
+        return transfer_values
 
 
 class TokenizerWrap(Tokenizer):
@@ -340,6 +374,14 @@ def sparse_cross_entropy(y_true, y_pred):
     return loss_mean
 
 
+def get_transfer_value_size(image_model):
+    return K.int_shape(image_model.output)[1]
+
+
+def get_image_size(image_model):
+    return K.int_shape(image_model.input)[1:3]
+
+
 def create_model(transfer_values_size,
                  state_size,
                  embedding_size,
@@ -355,13 +397,121 @@ def create_model(transfer_values_size,
     else:
         # if not create, the model
         model = create_decoder_model(transfer_values_size,
-                                    state_size,
-                                    embedding_size,
-                                    num_words)
+                                     state_size,
+                                     embedding_size,
+                                     num_words)
 
         optimizer = RMSprop(learning_rate=learning_rate)
         model.compile(optimizer=optimizer, loss=sparse_cross_entropy)
     return model
+
+
+def get_random_caption_tokens(image_indices, tokens):
+    """
+    Given a list of indices for images in the training-set,
+    select a token-sequence for a random caption for each image,
+    and return a list of all these token-sequences.
+    """
+    result = []
+    for image_index in image_indices:
+        caption_index = np.random.choice(len(tokens[image_index]))
+        random_tokens = tokens[image_index][caption_index]
+        result.append(random_tokens)
+    return result
+
+
+def batch_generator(num_images, transfer_values, tokens, batch_size):
+    """
+    Generator function for creating random batches of training-data.
+
+    Note that it selects the data completely randomly for each
+    batch, corresponding to sampling of the training-set with
+    replacement. This means it is possible to sample the same
+    data multiple times within a single epoch - and it is also
+    possible that some data is not sampled at all within an epoch.
+    However, all the data should be unique within a single batch.
+    """
+
+    # Infinite loop.
+    while True:
+        # Get a list of random indices for images in the training-set.
+        random_image_indices = np.random.randint(num_images, size=batch_size)
+
+        # Get the pre-computed transfer-values for those images.
+        # These are the outputs of the pre-trained image-model.
+        tv = transfer_values[random_image_indices]
+
+        # For each of the randomly chosen images there are
+        # at least 5 captions describing the contents of the image.
+        # Select one of those captions at random and get the
+        # associated sequence of integer-tokens.
+        random_tokens = get_random_caption_tokens(random_image_indices, tokens)
+
+        # Count the number of tokens in all these token-sequences.
+        num_tokens = [len(t) for t in random_tokens]
+
+        # Max number of tokens.
+        max_tokens = np.max(num_tokens)
+
+        # Pad all the other token-sequences with zeros
+        # so they all have the same length and can be
+        # input to the neural network as a numpy array.
+        tokens_padded = pad_sequences(random_tokens,
+                                      maxlen=max_tokens,
+                                      padding='post',
+                                      truncating='post')
+
+        # Further prepare the token-sequences.
+        # The decoder-part of the neural network
+        # will try to map the token-sequences to
+        # themselves shifted one time-step.
+        decoder_input_data = tokens_padded[:, 0:-1]
+        decoder_output_data = tokens_padded[:, 1:]
+
+        # Dict for the input-data. Because we have
+        # several inputs, we use a named dict to
+        # ensure that the data is assigned correctly.
+        x_data = \
+            {
+                'decoder_input': decoder_input_data,
+                'transfer_values_input': tv
+            }
+
+        # Dict for the output-data.
+        y_data = \
+            {
+                'decoder_output': decoder_output_data
+            }
+
+        yield (x_data, y_data)
+
+
+def train(model,
+          image_model,
+          tokenizer,
+          epochs,
+          steps_per_epoch,
+          image_batch_size,
+          text_batch_size,
+          save_model,
+          model_dir,
+          model_name):
+
+    transfer_values = process_images(image_ids,
+                                     image_dir,
+                                     coco_data,
+                                     image_model,
+                                     image_batch_size)
+    tokens = tokenizer.captions_to_tokens()  # tokenizer...
+    generator = batch_generator(num_images=len(image_ids),
+                                transfer_values=transfer_values,
+                                tokens=tokens,
+                                batch_size=text_batch_size)
+    model.fit(generator,
+              epochs=epochs,
+              steps_per_epoch=steps_per_epoch)
+    if save_model:
+        pass
 
 
 def main():
@@ -378,6 +528,7 @@ def main():
 
     image_model = create_image_model()
 
+    transfer_value_size = get_transfer_value_size(image_model)
     model = create_model(transfer_value_size,
                          args.state_size,
                          args.embedding_size,
