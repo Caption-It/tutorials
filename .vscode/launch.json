@@ -12,10 +12,9 @@
             "args": [
                 "--train",
                 "--validate",
-                "--show-image",
                 "--download-data",
-                "--train-data-size=100",
-                "--validate-data-size=3"
+                "--train-data-size=1000",
+                "--validate-data-size=100"
             ],
             "console": "integratedTerminal"
         }

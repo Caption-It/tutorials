@@ -15,6 +15,7 @@ from tensorflow.keras.optimizers import RMSprop
 from tensorflow.keras import backend as K
 from tensorflow.keras.preprocessing.text import Tokenizer
 from tensorflow.keras.preprocessing.sequence import pad_sequences
+from nltk.translate.bleu_score import sentence_bleu
 
 import skimage.io as io
 from PIL import Image
@@ -40,24 +41,28 @@ def parse_args():
     parser.add_argument('--state-size', type=int, default=512)
     parser.add_argument('--embedding-size', type=int, default=128)
     parser.add_argument('--num-words', type=int, default=10000)
-    parser.add_argument('--image-batch-size', type=int, default=8)
-    parser.add_argument('--text-batch-size', type=int, default=32)
+    parser.add_argument('--image-batch-size', type=int, default=32)
+    parser.add_argument('--text-batch-size', type=int, default=128)
     parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--steps-per-epoch', type=int, default=1000)
     parser.add_argument('--learning-rate', type=float, default=1e-3)
-    parser.add_argument('--show-images', action='store_true')
+    parser.add_argument('--show-captions', action='store_true')
     parser.add_argument('--max-words', type=int, default=30)
     return parser.parse_args()
 
 
 def is_running_on_gpu():
-    physical_devices = tf.config.list_physical_devices('GPU')
-    return len(physical_devices) != 0
+    gpus = tf.config.list_physical_devices('GPU')
+    return len(gpus) != 0
 
 
 def configure_gpu():
-    physical_devices = tf.config.list_physical_devices('GPU')
-    tf.config.experimental.set_memory_growth(physical_devices[0], True)
+    gpus = tf.config.list_physical_devices('GPU')
+    # For now we are assuming we are only using 1 GPU
+    tf.config.experimental.set_memory_growth(gpus[0], False)
+    tf.config.set_logical_device_configuration(
+        gpus[0],
+        [tf.config.LogicalDeviceConfiguration(memory_limit=4096)])
 
 
 def get_image_dir(data_dir):
@@ -218,6 +223,15 @@ def get_image_size(image_model):
     return K.int_shape(image_model.input)[1:3]
 
 
+def get_bleu_score(captions, predicted_caption):
+    captions_as_lists = []
+    for caption in captions:
+        caption_as_list = caption.split(' ')
+        captions_as_lists.append(caption_as_list)
+    predicted_caption_list = predicted_caption.split(' ')
+    return sentence_bleu(captions_as_lists, predicted_caption_list)
+
+
 def sparse_cross_entropy(y_true, y_pred):
     """
     Calculate the cross-entropy loss between y_true and y_pred.
@@ -320,8 +334,7 @@ class CaptionItModelRunner(object):
                  save_model, load_model,
                  train_data_size, val_data_size,
                  state_size, embedding_size, num_words,
-                 image_batch_size, text_batch_size,
-                 epochs, steps_per_epoch, learning_rate):
+                 image_batch_size, text_batch_size, learning_rate):
         super().__init__()
         self.data_dir = data_dir
         self.model_dir = model_dir
@@ -335,8 +348,6 @@ class CaptionItModelRunner(object):
         self.num_words = num_words
         self.image_batch_size = image_batch_size
         self.text_batch_size = text_batch_size
-        self.epochs = epochs
-        self.steps_per_epoch = steps_per_epoch
         self.learning_rate = learning_rate
 
         self.image_dir = get_image_dir(data_dir)
@@ -368,22 +379,21 @@ class CaptionItModelRunner(object):
         self.tokenizer = create_tokenizer(self.coco_data_train,
                                           self.num_words)
 
-    def train(self):
+    def train(self, epochs, steps_per_epoch):
         transfer_values = self._process_images(self.train_image_ids,
                                                self.coco_data_train)
         captions = get_captions(self.coco_data_train,
                                 self.train_image_ids)
         marked_captions = mark_captions(captions)
-        flattened_captions = flatten(marked_captions)
-        tokens = self.tokenizer.captions_to_tokens(flattened_captions)
+        tokens = self.tokenizer.captions_to_tokens(marked_captions)
         num_images = len(self.train_image_ids)
         generator = batch_generator(num_images=num_images,
                                     transfer_values=transfer_values,
                                     tokens=tokens,
                                     batch_size=self.text_batch_size)
         self.decoder_model.fit(generator,
-                               epochs=self.epochs,
-                               steps_per_epoch=self.steps_per_epoch)
+                               epochs=epochs,
+                               steps_per_epoch=steps_per_epoch)
 
     def generate_caption(self, image_path_or_id, max_words=30, coco_data=None):
         image = None
@@ -398,10 +408,10 @@ class CaptionItModelRunner(object):
         image = load_image(image_path, self.image_size)
         image_as_batch = np.expand_dims(image, axis=0)
         transfer_values = self.image_model.predict(image_as_batch)
-        decoder_input_data = np.zeros(shape=(1, self.max_tokens),
+        decoder_input_data = np.zeros(shape=(1, max_words),
                                       dtype=np.int)
-        token_start = tokenizer.word_index[MARK_START.strip()]
-        token_end = tokenizer.word_index[MARK_END.strip()]
+        token_start = self.tokenizer.word_index[MARK_START.strip()]
+        token_end = self.tokenizer.word_index[MARK_END.strip()]
         token_int = token_start
         output_text = ''
         count_tokens = 0
@@ -416,7 +426,7 @@ class CaptionItModelRunner(object):
             decoder_output = self.decoder_model.predict(x_data)
             token_onehot = decoder_output[0, count_tokens, :]
             token_int = np.argmax(token_onehot)
-            sampled_word = tokenizer.token_to_word(token_int)
+            sampled_word = self.tokenizer.token_to_word(token_int)
             output_text += ' ' + sampled_word
             count_tokens += 1
 
@@ -424,16 +434,25 @@ class CaptionItModelRunner(object):
         output_text = output_text.capitalize() + '.'
         return output_text
 
-    def validate(self, should_show_images, max_words=30):
+    def validate(self, should_show_captions, max_words=30):
+        bleu_scores = []
         for image_id in self.val_image_ids:
-            if should_show_images:
-                show_images(image_id, self.coco_data_val, self.image_dir)
+            captions = get_captions(self.coco_data_val, [image_id])[0]
+            predicted_caption = self.generate_caption(
+                image_id, max_words, self.coco_data_val)
+            bleu_score = get_bleu_score(captions, predicted_caption)
+            bleu_scores.append(bleu_score)
+            if should_show_captions:
+                print('Ground truth captions:')
+                show_captions(image_id, self.coco_data_val)
+                print('Predicted caption:')
+                print(predicted_caption)
+                print('Bleu Score:')
+                print(bleu_score)
+                print()
 
-            print('Ground truth captions:')
-            show_captions(image_id, self.coco_data_val)
-            print('Predicted caption:')
-            caption = self.generate_caption(image_id, max_words)
-            print(caption)
+        print(f'Avg bleu score:     {np.mean(bleu_scores)}')
+        print(f'Median bleu score:  {np.median(bleu_scores)}')
 
     def _load_train_dataset(self):
         train_data = COCO(
@@ -559,17 +578,16 @@ def main():
                                         num_words=args.num_words,
                                         image_batch_size=args.image_batch_size,
                                         text_batch_size=args.text_batch_size,
-                                        epochs=args.epochs,
-                                        steps_per_epoch=args.steps_per_epoch,
                                         learning_rate=args.learning_rate)
 
     model_runner.initialize()
 
     if args.train:
-        model_runner.train()
+        model_runner.train(args.epochs,
+                           args.steps_per_epoch)
 
     if args.validate:
-        model_runner.validate(args.show_images, args.max_words)
+        model_runner.validate(args.show_captions, args.max_words)
 
 
 if __name__ == '__main__':
