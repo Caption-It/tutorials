@@ -116,12 +116,12 @@ Usually this will be 'sdc' if you follow this guide.
 
 ### Format the data disk
 
-2. `sudo fdisk /dev/<disk>`
-3. `g`
-4. `n`
+1. `sudo fdisk /dev/<disk>`
+2. `g`
+3. `n`
+4. `Enter`
 5. `Enter`
-6. `Enter`
-7. `w`
+6. `w`
 
 ### Create the file system
 
