@@ -1,0 +1,22 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "hvass-lab-keras",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/hvass-lab-keras.py",
+            "args": [
+                "--train",
+                "--validate",
+                "--download-data",
+                "--train-data-size=1000",
+                "--validate-data-size=100"
+            ],
+            "console": "integratedTerminal"
+        }
+    ]
+}
