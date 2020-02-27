@@ -1,6 +1,8 @@
 # How To Create and Setup A Data Science VM in Azure
 This is a step by step tutorial on how to setup an Azure Data Science VM (Ubuntu 18.04)
 to use for running Python scripts and Jupyter Lab notebooks.
+Throughout this guide we use the convention that `<>` indicates a value that must be replaced
+with a value for your system. e.g. You should replace `<username>`, with your username.
 
 ## Create an Azure For Students Account
 1. Go to [https://azure.microsoft.com/en-us/free/students](https://azure.microsoft.com/en-us/free/students).
@@ -78,9 +80,9 @@ In the terminal where you have made your remote SSH connection:
 2. Add the line `c.Spawner.default_url = '/lab'`
     * This will default Jupyter to start in lab instead of hub
 3. Find the line that has `c.Spawner.notebook_dir = '~/notebooks'` and change it to `c.Spawner.notebook_dir = '~/'`.
-4. ctrl+o
-5. Enter
-6. ctrl+x
+4. `ctrl+o`
+5. `Enter`
+6. `ctrl+x`
 
 You may need to restart the VM and establish a new ssh terminal after these steps.
 
@@ -92,45 +94,56 @@ In a remote ssh terminal to your VM:
 ## Create Anaconda Environment
 In a remote ssh terminal to your VM:
 
+1. `cd <repo folder>`
 1. `conda env create -f environment.yml`
 
 ## Install Anaconda Environment As Jupyter Kernel
+In a remote ssh terminal to your VM:
 
-1. Activate conda environment `conda activate <env name>`
-2. `ipython kernel install --user --name=<env name>`
+1. Activate conda environment `conda activate cap-env`
+2. `ipython kernel install --user --name=cap-env`
 
 ## Configure Data Disk
 
 ### Identify the data disk
+In a remote ssh terminal to your VM:
 
 1. `lsblk`
+
+Look in the output for a disk that does not have a mounted partition.
+That is the name of the data disk you will configure.
+Usually this will be 'sdc' if you follow this guide.
 
 ### Format the data disk
 
 2. `sudo fdisk /dev/<disk>`
 3. `g`
 4. `n`
-5. `<Enter>`
-6. `<Enter>`
+5. `Enter`
+6. `Enter`
 7. `w`
 
 ### Create the file system
 
 1. `sudo mkfs -t ext4 /dev/<partition name>`
 
+The parition name is usually the name of the disk + a number.
+you can use `lsblk` to find the name of the partition.
+If you are following this guide, it will usually be 'sdc1'
+
 ### Mount the data disk
 
 1. `sudo mkdir /data`
-2. `sudo mount /dev/<partition name> /data`
-3. TODO: permissions?
+2. `sudo chown <username> /data`
+3. `sudo mount /dev/<partition name> /data`
 
 ### Setup data disk to mount on boot
 
-1. `sudo nano /etc/fstab`
-2. TODO:
+1. `sudo echo "/dev/<partition name>        /data   auto    defaults,nofail 0 0" >> /etc/fstab`
 
-
+You may need to reboot the VM for this to take effect.
 
 ## Go To Jupyter Lab
 
 In a browser go to, `https://<public ip>:8000`.
+You will be prompted for a username and password. Enter the same username and password you use for you VM.

@@ -9,7 +9,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow.keras.applications.vgg16 import VGG16
-from tensorflow.keras.models import Model
+from tensorflow.keras.models import Model, model_from_json
 from tensorflow.keras.layers import Input, Dense, GRU, Embedding
 from tensorflow.keras.optimizers import RMSprop
 from tensorflow.keras import backend as K
@@ -23,7 +23,7 @@ from pycocotools.coco import COCO
 
 
 MARK_START = 'ssss '
-MARK_END = 'eeee '
+MARK_END = ' eeee'
 
 
 def parse_args():
@@ -35,8 +35,10 @@ def parse_args():
     parser.add_argument('--save-model', action='store_true')
     parser.add_argument('--load-model', action='store_true')
     parser.add_argument('--train', action='store_true')
+    # train_data_size == None means to use the whole dataset
     parser.add_argument('--train-data-size', type=int, default=None)
     parser.add_argument('--validate', action='store_true')
+    # validate_data_size == None means to use the whole dataset
     parser.add_argument('--validate-data-size', type=int, default=None)
     parser.add_argument('--state-size', type=int, default=512)
     parser.add_argument('--embedding-size', type=int, default=128)
@@ -48,6 +50,7 @@ def parse_args():
     parser.add_argument('--learning-rate', type=float, default=1e-3)
     parser.add_argument('--show-captions', action='store_true')
     parser.add_argument('--max-words', type=int, default=30)
+    parser.add_argument('--gpu-memory', type=int, default=4096)
     return parser.parse_args()
 
 
@@ -56,13 +59,13 @@ def is_running_on_gpu():
     return len(gpus) != 0
 
 
-def configure_gpu():
+def configure_gpu(gpu_mem):
     gpus = tf.config.list_physical_devices('GPU')
     # For now we are assuming we are only using 1 GPU
     tf.config.experimental.set_memory_growth(gpus[0], False)
     tf.config.set_logical_device_configuration(
         gpus[0],
-        [tf.config.LogicalDeviceConfiguration(memory_limit=4096)])
+        [tf.config.LogicalDeviceConfiguration(memory_limit=gpu_mem)])
 
 
 def get_image_dir(data_dir):
@@ -395,6 +398,9 @@ class CaptionItModelRunner(object):
                                epochs=epochs,
                                steps_per_epoch=steps_per_epoch)
 
+        if self.save_model:
+            self._save_model()
+
     def generate_caption(self, image_path_or_id, max_words=30, coco_data=None):
         image = None
         image_path = None
@@ -513,7 +519,6 @@ class CaptionItModelRunner(object):
         decoder_gru3 = GRU(self.state_size, name='decoder_gru3',
                            return_sequences=True)
 
-        # Dense is another term for Fully Connected
         decoder_dense = Dense(self.num_words,
                               activation='linear',
                               name='decoder_output')
@@ -546,13 +551,43 @@ class CaptionItModelRunner(object):
 
     def _create_decoder_model(self):
         model = None
-        # check if we can load model
         if self.load_model:
-            pass
+            model = self._load_model()
         else:
             model = self._create_decoder_network()
             optimizer = RMSprop(learning_rate=self.learning_rate)
             model.compile(optimizer=optimizer, loss=sparse_cross_entropy)
+        return model
+
+    def _get_model_json_file(self):
+        return os.path.join(self.model_dir, f'{self.model_name}.json')
+
+    def _get_model_weights_file(self):
+        return os.path.join(self.model_dir, f'{self.model_name}.h5')
+
+    def _save_model(self):
+        # serialize model to JSON
+        model_json = self.decoder_model.to_json()
+        model_json_file = self._get_model_json_file()
+        with open(model_json_file, "w") as json_file:
+            json_file.write(model_json)
+        # serialize weights to HDF5
+        model_weights_file = self._get_model_weights_file()
+        self.decoder_model.save_weights(model_weights_file)
+        print(
+            f'Saved model at path {self.model_dir} with name {self.model_name}.')
+
+    def _load_model(self):
+        model_json = None
+        model_json_file = self._get_model_json_file()
+        with open(model_json_file, 'r') as json_file:
+            model_json = json_file.read()
+        model = model_from_json(model_json)
+        # load weights into new model
+        model_weights_file = self._get_model_weights_file()
+        model.load_weights(model_weights_file)
+        print(
+            f'Loaded model from path {self.model_dir} with name {self.model_name}.')
         return model
 
 
@@ -562,7 +597,7 @@ def main():
 
     if is_running_on_gpu():
         print('Using GPU')
-        configure_gpu()
+        configure_gpu(args.gpu_memory)
     if args.download_data:
         download_data(args.data_dir, image_dir)
 
