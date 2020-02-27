@@ -95,7 +95,7 @@ In a remote ssh terminal to your VM:
 In a remote ssh terminal to your VM:
 
 1. `cd <repo folder>`
-1. `conda env create -f environment.yml`
+2. `conda env create -f environment.yml`
 
 ## Install Anaconda Environment As Jupyter Kernel
 In a remote ssh terminal to your VM:
